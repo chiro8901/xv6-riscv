@@ -146,6 +146,11 @@ UPROGS=\
 	$U/_fifotestp\
 	$U/_fifotestc\
 	$U/_fifotest\
+	$U/_lseektest\
+	$U/_appendtest\
+    $U/_FIFOprogram\
+    $U/_FIFOprogramp\
+    $U/_FIFOprogramc\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

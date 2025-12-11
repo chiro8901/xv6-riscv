@@ -352,7 +352,42 @@ sys_open(void)
   if(ip->type == T_DEVICE){
     f->type = FD_DEVICE;
     f->major = ip->major;
-  } else {
+  }else if(ip->type == T_FIFO){
+    struct pipe *pi = fifogetpipe(ip);
+    if(pi == 0){
+      if(f){
+        fileclose(f);
+      }
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+    f->type = FD_PIPE;
+    f->pipe = pi;
+    iunlock(ip);
+    acquire(&pi->lock);
+    if(omode & O_WRONLY){
+      f->writable = 1;
+      f->readable = 0;
+      pi->writeopen++;
+      wakeup(&pi->writeopen);
+      while(pi->readopen == 0){
+        sleep(&pi->readopen, &pi->lock);
+      }
+    }else{
+      f->writable = 0;
+      f->readable = 1;
+      pi->readopen++;
+      wakeup(&pi->readopen);
+      while(pi->writeopen == 0){
+        sleep(&pi->writeopen, &pi->lock);
+      }
+    }
+    release(&pi->lock);
+    iput(ip);
+    end_op();
+    return fd;
+  }else {
     f->type = FD_INODE;
     f->off = 0;
   }
@@ -362,6 +397,9 @@ sys_open(void)
 
   if((omode & O_TRUNC) && ip->type == T_FILE){
     itrunc(ip);
+  }
+  if((omode & O_APPEND) && ip->type == T_FILE){
+    f->off = ip->size;
   }
 
   iunlock(ip);
@@ -511,7 +549,17 @@ sys_mkfifo(void)
   // return value:
   //    0: successfully created a fifo
   //   -1: an error occurred
-  return -1;
+  char path[MAXPATH];
+  struct inode *ip;
+
+  begin_op();
+  if(argstr(0, path, MAXPATH) < 0 || (ip = create(path, T_FIFO, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+  iunlockput(ip);
+  end_op();
+  return 0;
 }
 
 uint64
@@ -522,5 +570,69 @@ sys_lseek(void)
   //  * successful completion, resulting offset location
   //    as measured in bytes from the beginning of the file. 
   //  * Otherwise, -1 is returned
-  return -1;
+  int fd;
+  int offset;
+  int whence;
+  struct file *f;
+  struct inode *ip;
+  int new_offset;
+
+  if(argfd(0, &fd, &f) < 0){
+    return -1;
+  }
+  argint(1, &offset);
+  argint(2, &whence);
+
+  if(f->type != FD_INODE){
+    return -1;
+  }
+  ip = f->ip;
+
+  begin_op();
+  ilock(ip);
+
+  if(ip->type != T_FILE){
+    iunlock(ip);
+    end_op();
+    return -1;
+  }
+
+  switch(whence){
+    case SEEK_SET:
+      new_offset = offset;
+      break;
+    case SEEK_CUR:
+      new_offset = f->off + offset;
+      break;
+    case SEEK_END:
+      new_offset = ip->size + offset;
+      break;
+    default:
+      iunlock(ip);
+      end_op();
+      return -1;
+  }
+
+  if(new_offset > ip->size){
+    char zeros[BSIZE];
+    memset(zeros, 0, BSIZE);
+    uint64 current = ip->size;
+    while(current < new_offset){
+      int n = new_offset - current;
+      if(n > BSIZE){
+        n = BSIZE;
+      }
+      if(writei(ip, 0, (uint64)zeros, current, n) != n){
+        iunlock(ip);
+        end_op();
+        return -1;
+      }
+      current += n;
+    }
+  }
+
+  f->off = new_offset;
+  iunlock(ip);
+  end_op();
+  return new_offset;
 }

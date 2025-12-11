@@ -19,10 +19,77 @@ struct {
   struct file file[NFILE];
 } ftable;
 
+#define NFIFO 10
+struct{
+  struct spinlock lock;
+  struct{
+    struct inode *ip;
+    struct pipe *pipe;
+  } fifos[NFIFO];
+} fifotable;
+
 void
 fileinit(void)
 {
   initlock(&ftable.lock, "ftable");
+  initlock(&fifotable.lock, "fifotable");
+  for(int i = 0; i < NFIFO; i++){
+    fifotable.fifos[i].ip = 0;
+    fifotable.fifos[i].pipe = 0;
+  }
+}
+
+struct pipe*
+fifogetpipe(struct inode *ip)
+{
+  if(ip == 0){
+    return 0;
+  }
+  struct pipe *pi = 0;
+  printf("fifogetpipe: dev=%d inum=%d\n", ip->dev, ip->inum);
+  acquire(&fifotable.lock);
+
+  //existing pipe
+  for(int i = 0; i < NFIFO; i++){
+    if(fifotable.fifos[i].ip != 0){
+      printf("  slot %d: dev=%d inum=%d\n", i, 
+             fifotable.fifos[i].ip->dev, fifotable.fifos[i].ip->inum);
+      if(fifotable.fifos[i].ip->dev == ip->dev &&
+         fifotable.fifos[i].ip->inum == ip->inum){
+        pi = fifotable.fifos[i].pipe;
+        printf("  found existing pipe at slot %d\n", i);
+        release(&fifotable.lock);
+        return pi;
+      }
+    }
+  }
+
+  //new pipe
+  printf("  creating new pipe\n");
+  if((pi = (struct pipe*)kalloc()) == 0){
+    release(&fifotable.lock);
+    return 0;
+  }
+  pi->readopen = 0;
+  pi->writeopen = 0;
+  pi->nwrite = 0;
+  pi->nread = 0;
+  initlock(&pi->lock, "pipe");
+  for(int i = 0; i < NFIFO; i++){
+    if(fifotable.fifos[i].ip == 0){
+      fifotable.fifos[i].ip = idup(ip);
+      fifotable.fifos[i].pipe = pi;
+      printf("  registered at slot %d\n", i);
+      release(&fifotable.lock);
+      return pi;
+    }
+  }
+
+  //fifotable full
+  printf("  fifotable full!\n");
+  kfree((char*)pi);
+  release(&fifotable.lock);
+  return 0;
 }
 
 // Allocate a file structure.
